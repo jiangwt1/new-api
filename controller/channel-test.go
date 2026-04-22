@@ -218,6 +218,11 @@ func testChannel(channel *model.Channel, testModel string, endpointType string, 
 		}
 	}
 
+	// /v1/responses endpoint requires stream=true
+	if requestPath == "/v1/responses" {
+		isStream = true
+	}
+
 	request := buildTestRequest(testModel, endpointType, channel, isStream)
 
 	info, err := relaycommon.GenRelayInfo(c, relayFormat, request, nil)
@@ -231,6 +236,7 @@ func testChannel(channel *model.Channel, testModel string, endpointType string, 
 	}
 
 	info.IsChannelTest = true
+	info.IsStream = isStream
 	info.InitChannelMeta(c)
 
 	err = helper.ModelMappedHelper(c, info, request)
@@ -822,7 +828,9 @@ func testAllChannels(notify bool) error {
 			}
 			isChannelEnabled := channel.Status == common.ChannelStatusEnabled
 			tik := time.Now()
-			result := testChannel(channel, "", "", false)
+			// use stream for channels that require it (e.g. Codex with /v1/responses endpoint)
+			isStream := relaycommon.StreamSupported(channel.Type)
+			result := testChannel(channel, "", "", isStream)
 			tok := time.Now()
 			milliseconds := tok.Sub(tik).Milliseconds()
 

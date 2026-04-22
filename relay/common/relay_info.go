@@ -324,6 +324,11 @@ var streamSupportedChannels = map[int]bool{
 	constant.ChannelTypeSiliconFlow: true,
 }
 
+// StreamSupported returns true if the channel type supports streaming.
+func StreamSupported(channelType int) bool {
+	return streamSupportedChannels[channelType]
+}
+
 func GenRelayInfoWs(c *gin.Context, ws *websocket.Conn) *RelayInfo {
 	info := genBaseRelayInfo(c, nil)
 	info.RelayFormat = types.RelayFormatOpenAIRealtime
