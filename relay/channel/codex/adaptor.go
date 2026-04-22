@@ -111,6 +111,22 @@ func extractTextContent(msg dto.ClaudeMessage) string {
 	return sb.String()
 }
 
+// extractOpenAIMessageContent extracts plain text from OpenAI Message content
+func extractOpenAIMessageContent(msg dto.Message) string {
+	if msg.IsStringContent() {
+		return msg.StringContent()
+	}
+	// Array content - extract text blocks only
+	content := msg.ParseContent()
+	var sb strings.Builder
+	for _, media := range content {
+		if media.Type == "text" && media.Text != "" {
+			sb.WriteString(media.Text)
+		}
+	}
+	return sb.String()
+}
+
 func (a *Adaptor) ConvertAudioRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.AudioRequest) (io.Reader, error) {
 	return nil, errors.New("codex channel: endpoint not supported")
 }
@@ -123,7 +139,71 @@ func (a *Adaptor) Init(info *relaycommon.RelayInfo) {
 }
 
 func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayInfo, request *dto.GeneralOpenAIRequest) (any, error) {
-	return nil, errors.New("codex channel: /v1/chat/completions endpoint not supported")
+	// Ensure RelayMode is set to Responses for Codex channel
+	info.RelayMode = relayconstant.RelayModeResponses
+	info.FinalRequestRelayFormat = types.RelayFormatOpenAIResponses
+	info.IsStream = true
+
+	responsesReq := &dto.OpenAIResponsesRequest{
+		Model:  request.Model,
+		Stream: lo.ToPtr(true), // Codex requires stream=true
+	}
+
+	// Convert system prompt to instructions
+	if len(request.Messages) > 0 {
+		for _, msg := range request.Messages {
+			if msg.Role == request.GetSystemRoleName() {
+				if msg.IsStringContent() {
+					systemText := msg.StringContent()
+					if systemText != "" {
+						responsesReq.Instructions = json.RawMessage(strconv.Quote(systemText))
+					}
+				} else {
+					content := msg.ParseContent()
+					var sb strings.Builder
+					for _, media := range content {
+						if media.Type == "text" && media.Text != "" {
+							sb.WriteString(media.Text)
+						}
+					}
+					if sb.Len() > 0 {
+						responsesReq.Instructions = json.RawMessage(strconv.Quote(sb.String()))
+					}
+				}
+				break
+			}
+		}
+	}
+
+	// Default instructions
+	if len(responsesReq.Instructions) == 0 {
+		responsesReq.Instructions = json.RawMessage(`""`)
+	}
+
+	// Convert messages to input
+	input := make([]any, 0)
+	for _, msg := range request.Messages {
+		if msg.Role == request.GetSystemRoleName() {
+			continue // skip system message
+		}
+		contentStr := extractOpenAIMessageContent(msg)
+		input = append(input, map[string]any{
+			"type":    "message",
+			"role":    msg.Role,
+			"content": contentStr,
+		})
+	}
+	if b, err := common.Marshal(input); err == nil {
+		responsesReq.Input = b
+	}
+
+	// Copy other fields from original request
+	responsesReq.Store = json.RawMessage("false")
+	if request.Stream != nil {
+		responsesReq.Stream = request.Stream
+	}
+
+	return responsesReq, nil
 }
 
 func (a *Adaptor) ConvertRerankRequest(c *gin.Context, relayMode int, request dto.RerankRequest) (any, error) {
@@ -205,6 +285,14 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycom
 	// If original request was Claude format, convert response back to Claude SSE
 	if info.RelayFormat == types.RelayFormatClaude {
 		return openai.ResponsesToClaudeStreamHandler(c, info, resp)
+	}
+
+	// If original request was Chat Completions, convert response back to Chat format
+	if info.RelayFormat == types.RelayFormatOpenAI {
+		if info.IsStream {
+			return openai.OaiResponsesToChatStreamHandler(c, info, resp)
+		}
+		return openai.OaiResponsesToChatHandler(c, info, resp)
 	}
 
 	if info.IsStream {
