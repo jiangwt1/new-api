@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -14,6 +15,7 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/types"
+	"github.com/samber/lo"
 
 	"github.com/gin-gonic/gin"
 )
@@ -25,8 +27,88 @@ func (a *Adaptor) ConvertGeminiRequest(c *gin.Context, info *relaycommon.RelayIn
 	return nil, errors.New("codex channel: endpoint not supported")
 }
 
-func (a *Adaptor) ConvertClaudeRequest(*gin.Context, *relaycommon.RelayInfo, *dto.ClaudeRequest) (any, error) {
-	return nil, errors.New("codex channel: /v1/messages endpoint not supported")
+func (a *Adaptor) ConvertClaudeRequest(c *gin.Context, info *relaycommon.RelayInfo, request *dto.ClaudeRequest) (any, error) {
+	// Ensure RelayMode is set to Responses for Codex channel
+	info.RelayMode = relayconstant.RelayModeResponses
+	// Set final request format to indicate conversion
+	info.FinalRequestRelayFormat = types.RelayFormatOpenAIResponses
+	// Codex requires streaming
+	info.IsStream = true
+
+	responsesReq := &dto.OpenAIResponsesRequest{
+		Model:  request.Model,
+		Stream: lo.ToPtr(true), // Codex requires stream=true
+	}
+
+	// Convert system to instructions (Codex requires string format)
+	if request.System != nil {
+		if request.IsStringSystem() {
+			systemText := request.GetStringSystem()
+			if systemText != "" {
+				responsesReq.Instructions = json.RawMessage(strconv.Quote(systemText))
+			}
+		} else {
+			// System is array of content blocks - extract text
+			systemMedia := request.ParseSystem()
+			if len(systemMedia) > 0 {
+				var sb strings.Builder
+				for i, media := range systemMedia {
+					if media.Type == "text" && media.Text != nil {
+						if i > 0 {
+							sb.WriteString("\n")
+						}
+						sb.WriteString(*media.Text)
+					}
+				}
+				if sb.Len() > 0 {
+					responsesReq.Instructions = json.RawMessage(strconv.Quote(sb.String()))
+				}
+			}
+		}
+	}
+
+	// Default instructions (Codex expects non-empty)
+	if len(responsesReq.Instructions) == 0 {
+		responsesReq.Instructions = json.RawMessage(`"You are a helpful coding assistant."`)
+	}
+
+	// Convert messages to input with proper type field
+	if len(request.Messages) > 0 {
+		input := make([]any, 0, len(request.Messages))
+		for _, msg := range request.Messages {
+			// Extract text content as string
+			contentStr := extractTextContent(msg)
+			input = append(input, map[string]any{
+				"type":    "message",
+				"role":    msg.Role,
+				"content": contentStr,
+			})
+		}
+		if b, err := common.Marshal(input); err == nil {
+			responsesReq.Input = b
+		}
+	}
+
+	// codex: store must be false
+	responsesReq.Store = json.RawMessage("false")
+
+	return responsesReq, nil
+}
+
+// extractTextContent extracts plain text from Claude message content
+func extractTextContent(msg dto.ClaudeMessage) string {
+	if msg.IsStringContent() {
+		return msg.GetStringContent()
+	}
+	// Array content - extract text blocks only
+	content, _ := msg.ParseContent()
+	var sb strings.Builder
+	for _, media := range content {
+		if media.Type == "text" && media.Text != nil {
+			sb.WriteString(*media.Text)
+		}
+	}
+	return sb.String()
 }
 
 func (a *Adaptor) ConvertAudioRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.AudioRequest) (io.Reader, error) {
@@ -118,6 +200,11 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycom
 
 	if info.RelayMode == relayconstant.RelayModeResponsesCompact {
 		return openai.OaiResponsesCompactionHandler(c, resp)
+	}
+
+	// If original request was Claude format, convert response back to Claude SSE
+	if info.RelayFormat == types.RelayFormatClaude {
+		return openai.ResponsesToClaudeStreamHandler(c, info, resp)
 	}
 
 	if info.IsStream {
