@@ -353,10 +353,15 @@ func handleResponseCompleted(event *dto.ResponsesStreamResponse, state *claudeSt
 				state.CacheReadTokens = event.Response.Usage.InputTokensDetails.CachedTokens
 			}
 		}
-		reasoning := string(event.Response.Status)
-		if reasoning == "incomplete" || reasoning == `"incomplete"` {
+		status := string(event.Response.Status)
+		switch status {
+		case `"incomplete"`:
 			if event.Response.IncompleteDetails != nil && event.Response.IncompleteDetails.Reasoning == "max_output_tokens" {
 				stopReason = "max_tokens"
+			}
+		case `"completed"`:
+			if state.ContentBlockIndex > 0 && state.CurrentBlockType == "tool_use" {
+				stopReason = "tool_use"
 			}
 		}
 	}
@@ -422,15 +427,24 @@ func closeCurrentBlock(state *claudeStreamState) []ClaudeStreamEvent {
 	}
 }
 
-// fixCallID converts Responses call ID format to Claude format
-// Responses uses "call_xxx" format, Claude uses "toolu_xxx" format
+// fixCallID converts Responses call ID format to Claude format.
+// Responses may return IDs with "call_xxx" or "fc_xxx" prefix.
+// Claude expects "toolu_xxx" format.
 func fixCallID(callID string) string {
 	if callID == "" {
 		return ""
 	}
 	// If already in Claude format, return as-is
-	if strings.HasPrefix(callID, "toolu_") || strings.HasPrefix(callID, "fc_") {
+	if strings.HasPrefix(callID, "toolu_") {
 		return callID
+	}
+	// Handle fc_ prefix (from Codex): fc_toolu_xxx -> toolu_xxx, fc_call_xxx -> call_xxx
+	if strings.HasPrefix(callID, "fc_") {
+		after := callID[3:]
+		if strings.HasPrefix(after, "toolu_") || strings.HasPrefix(after, "call_") {
+			return after
+		}
+		return "toolu_" + after
 	}
 	// Convert "call_xxx" to "toolu_xxx"
 	if strings.HasPrefix(callID, "call_") {

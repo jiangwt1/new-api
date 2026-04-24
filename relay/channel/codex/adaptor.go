@@ -15,7 +15,6 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/types"
-	"github.com/samber/lo"
 
 	"github.com/gin-gonic/gin"
 )
@@ -23,24 +22,347 @@ import (
 type Adaptor struct {
 }
 
+// toResponsesCallID converts a Claude tool call ID to Responses API format.
+// Responses API expects IDs starting with "fc_".
+func toResponsesCallID(id string) string {
+	if id == "" {
+		return ""
+	}
+	if strings.HasPrefix(id, "fc_") {
+		return id
+	}
+	return "fc_" + id
+}
+
+// normalizeToolParameters ensures tool parameters have a properties field for object schemas.
+func normalizeToolParameters(schema json.RawMessage) json.RawMessage {
+	if len(schema) == 0 || string(schema) == "null" {
+		return json.RawMessage(`{"type":"object","properties":{}}`)
+	}
+
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(schema, &m); err != nil {
+		return schema
+	}
+
+	typ, ok := m["type"]
+	if !ok || string(typ) != `"object"` {
+		return schema
+	}
+
+	if _, ok := m["properties"]; ok {
+		return schema
+	}
+
+	m["properties"] = json.RawMessage(`{}`)
+	out, err := json.Marshal(m)
+	if err != nil {
+		return schema
+	}
+	return out
+}
+
+// convertClaudeToolsToResponses converts Claude tools to Responses API format.
+func convertClaudeToolsToResponses(tools any) (json.RawMessage, error) {
+	if tools == nil {
+		return nil, nil
+	}
+
+	toolsJSON, err := json.Marshal(tools)
+	if err != nil {
+		return nil, err
+	}
+
+	var claudeTools []map[string]any
+	if err := json.Unmarshal(toolsJSON, &claudeTools); err != nil {
+		return nil, err
+	}
+
+	if len(claudeTools) == 0 {
+		return nil, nil
+	}
+
+	var out []map[string]any
+	for _, t := range claudeTools {
+		toolType, _ := t["type"].(string)
+		if strings.HasPrefix(toolType, "web_search") {
+			out = append(out, map[string]any{"type": "web_search"})
+			continue
+		}
+
+		name, _ := t["name"].(string)
+		desc, _ := t["description"].(string)
+		var params json.RawMessage
+		if p, ok := t["input_schema"]; ok {
+			pj, _ := json.Marshal(p)
+			params = normalizeToolParameters(pj)
+		} else if p, ok := t["parameters"]; ok {
+			pj, _ := json.Marshal(p)
+			params = normalizeToolParameters(pj)
+		} else {
+			params = json.RawMessage(`{"type":"object","properties":{}}`)
+		}
+
+		out = append(out, map[string]any{
+			"type":        "function",
+			"name":        name,
+			"description": desc,
+			"parameters":  params,
+		})
+	}
+
+	return json.Marshal(out)
+}
+
+// convertClaudeToolChoiceToResponses converts Claude tool_choice to Responses API format.
+func convertClaudeToolChoiceToResponses(toolChoice any) (json.RawMessage, error) {
+	if toolChoice == nil {
+		return nil, nil
+	}
+
+	tcJSON, err := json.Marshal(toolChoice)
+	if err != nil {
+		return nil, err
+	}
+
+	var tc struct {
+		Type string `json:"type"`
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(tcJSON, &tc); err != nil {
+		return nil, err
+	}
+
+	switch tc.Type {
+	case "auto":
+		return json.Marshal("auto")
+	case "any":
+		return json.Marshal("required")
+	case "none":
+		return json.Marshal("none")
+	case "tool":
+		return json.Marshal(map[string]any{
+			"type":     "function",
+			"function": map[string]string{"name": tc.Name},
+		})
+	default:
+		return tcJSON, nil
+	}
+}
+
+// extractToolResultOutput extracts text from a tool_result content field.
+func extractToolResultOutput(content any) (string, []map[string]any) {
+	if content == nil {
+		return "(empty)", nil
+	}
+
+	if s, ok := content.(string); ok {
+		if s == "" {
+			return "(empty)", nil
+		}
+		return s, nil
+	}
+
+	blocks, ok := content.([]any)
+	if !ok {
+		return "(empty)", nil
+	}
+
+	var textParts []string
+	var imageParts []map[string]any
+	for _, block := range blocks {
+		m, ok := block.(map[string]any)
+		if !ok {
+			continue
+		}
+		blockType, _ := m["type"].(string)
+		switch blockType {
+		case "text":
+			if text, ok := m["text"].(string); ok && text != "" {
+				textParts = append(textParts, text)
+			}
+		case "image":
+			src, _ := m["source"].(map[string]any)
+			if src != nil {
+				mediaType, _ := src["media_type"].(string)
+				data, _ := src["data"].(string)
+				if mediaType == "" {
+					mediaType = "image/png"
+				}
+				if data != "" {
+					imageParts = append(imageParts, map[string]any{
+						"type":      "input_image",
+						"image_url": "data:" + mediaType + ";base64," + data,
+					})
+				}
+			}
+		}
+	}
+
+	text := strings.Join(textParts, "\n\n")
+	if text == "" {
+		text = "(empty)"
+	}
+	return text, imageParts
+}
+
+// convertClaudeAssistantMessage converts an assistant message with potential tool_use blocks.
+func convertClaudeAssistantMessage(msg dto.ClaudeMessage) ([]map[string]any, error) {
+	var items []map[string]any
+
+	if msg.IsStringContent() {
+		content := msg.GetStringContent()
+		if content != "" {
+			parts := []map[string]any{{"type": "output_text", "text": content}}
+			partsJSON, _ := json.Marshal(parts)
+			items = append(items, map[string]any{
+				"type":    "message",
+				"role":    "assistant",
+				"content": partsJSON,
+			})
+		}
+		return items, nil
+	}
+
+	blocks, err := msg.ParseContent()
+	if err != nil || len(blocks) == 0 {
+		return items, nil
+	}
+
+	var textParts []string
+	var toolUseBlocks []dto.ClaudeMediaMessage
+	for _, block := range blocks {
+		switch block.Type {
+		case "text":
+			if block.Text != nil && *block.Text != "" {
+				textParts = append(textParts, *block.Text)
+			}
+		case "tool_use":
+			toolUseBlocks = append(toolUseBlocks, block)
+		}
+	}
+
+	if len(textParts) > 0 {
+		parts := []map[string]any{}
+		for _, t := range textParts {
+			parts = append(parts, map[string]any{"type": "output_text", "text": t})
+		}
+		partsJSON, _ := json.Marshal(parts)
+		items = append(items, map[string]any{
+			"type":    "message",
+			"role":    "assistant",
+			"content": partsJSON,
+		})
+	}
+
+	for _, block := range toolUseBlocks {
+		args := "{}"
+		if block.Input != nil {
+			if inputJSON, err := json.Marshal(block.Input); err == nil {
+				args = string(inputJSON)
+			}
+		}
+		items = append(items, map[string]any{
+			"type":      "function_call",
+			"call_id":   toResponsesCallID(block.Id),
+			"name":      block.Name,
+			"arguments": args,
+		})
+	}
+
+	return items, nil
+}
+
+// convertClaudeUserMessage converts a user message with potential tool_result blocks.
+func convertClaudeUserMessage(msg dto.ClaudeMessage) ([]map[string]any, error) {
+	var items []map[string]any
+
+	if msg.IsStringContent() {
+		content := msg.GetStringContent()
+		if content != "" {
+			items = append(items, map[string]any{
+				"type":    "message",
+				"role":    "user",
+				"content": content,
+			})
+		}
+		return items, nil
+	}
+
+	blocks, err := msg.ParseContent()
+	if err != nil || len(blocks) == 0 {
+		return items, nil
+	}
+
+	var toolResultImageParts []map[string]any
+
+	// Extract tool_result blocks -> function_call_output items
+	for _, block := range blocks {
+		if block.Type != "tool_result" {
+			continue
+		}
+		outputText, imageParts := extractToolResultOutput(block.Content)
+		items = append(items, map[string]any{
+			"type":    "function_call_output",
+			"call_id": toResponsesCallID(block.ToolUseId),
+			"output":  outputText,
+		})
+		toolResultImageParts = append(toolResultImageParts, imageParts...)
+	}
+
+	// Collect remaining text and image blocks into user message
+	var parts []map[string]any
+	for _, block := range blocks {
+		switch block.Type {
+		case "text":
+			if block.Text != nil && *block.Text != "" {
+				parts = append(parts, map[string]any{"type": "input_text", "text": *block.Text})
+			}
+		case "image":
+			if block.Source != nil {
+				dataStr, _ := block.Source.Data.(string)
+				if dataStr != "" {
+					mediaType := block.Source.MediaType
+					if mediaType == "" {
+						mediaType = "image/png"
+					}
+					parts = append(parts, map[string]any{
+						"type":      "input_image",
+						"image_url": "data:" + mediaType + ";base64," + dataStr,
+					})
+				}
+			}
+		}
+	}
+	parts = append(parts, toolResultImageParts...)
+
+	if len(parts) > 0 {
+		partsJSON, _ := json.Marshal(parts)
+		items = append(items, map[string]any{
+			"type":    "message",
+			"role":    "user",
+			"content": partsJSON,
+		})
+	}
+
+	return items, nil
+}
+
 func (a *Adaptor) ConvertGeminiRequest(c *gin.Context, info *relaycommon.RelayInfo, request *dto.GeminiChatRequest) (any, error) {
 	return nil, errors.New("codex channel: endpoint not supported")
 }
 
 func (a *Adaptor) ConvertClaudeRequest(c *gin.Context, info *relaycommon.RelayInfo, request *dto.ClaudeRequest) (any, error) {
-	// Ensure RelayMode is set to Responses for Codex channel
 	info.RelayMode = relayconstant.RelayModeResponses
-	// Set final request format to indicate conversion
 	info.FinalRequestRelayFormat = types.RelayFormatOpenAIResponses
-	// Codex requires streaming
 	info.IsStream = true
 
 	responsesReq := &dto.OpenAIResponsesRequest{
 		Model:  request.Model,
-		Stream: lo.ToPtr(true), // Codex requires stream=true
+		Stream: func(b bool) *bool { return &b }(true),
 	}
 
-	// Convert system to instructions (Codex requires string format)
+	// Convert system to instructions
 	if request.System != nil {
 		if request.IsStringSystem() {
 			systemText := request.GetStringSystem()
@@ -48,7 +370,6 @@ func (a *Adaptor) ConvertClaudeRequest(c *gin.Context, info *relaycommon.RelayIn
 				responsesReq.Instructions = json.RawMessage(strconv.Quote(systemText))
 			}
 		} else {
-			// System is array of content blocks - extract text
 			systemMedia := request.ParseSystem()
 			if len(systemMedia) > 0 {
 				var sb strings.Builder
@@ -67,40 +388,88 @@ func (a *Adaptor) ConvertClaudeRequest(c *gin.Context, info *relaycommon.RelayIn
 		}
 	}
 
-	// Default instructions (Codex expects non-empty)
 	if len(responsesReq.Instructions) == 0 {
 		responsesReq.Instructions = json.RawMessage(`"You are a helpful coding assistant."`)
 	}
 
-	// Convert messages to input with proper type field
-	if len(request.Messages) > 0 {
-		input := make([]any, 0, len(request.Messages))
-		for _, msg := range request.Messages {
-			// Extract text content as string
+	// Convert messages to input items with tool support
+	input := make([]any, 0)
+	for _, msg := range request.Messages {
+		var items []map[string]any
+		var err error
+		switch msg.Role {
+		case "assistant":
+			items, err = convertClaudeAssistantMessage(msg)
+		case "user":
+			items, err = convertClaudeUserMessage(msg)
+		default:
+			// Fallback: treat as plain text
 			contentStr := extractTextContent(msg)
-			input = append(input, map[string]any{
-				"type":    "message",
-				"role":    msg.Role,
-				"content": contentStr,
-			})
+			if contentStr != "" {
+				items = []map[string]any{{
+					"type":    "message",
+					"role":    msg.Role,
+					"content": contentStr,
+				}}
+			}
 		}
-		if b, err := common.Marshal(input); err == nil {
-			responsesReq.Input = b
+		if err != nil {
+			return nil, err
+		}
+		for _, item := range items {
+			input = append(input, item)
 		}
 	}
+	if b, err := common.Marshal(input); err == nil {
+		responsesReq.Input = b
+	}
 
-	// codex: store must be false
+	// Convert tools
+	if request.Tools != nil {
+		toolsJSON, err := convertClaudeToolsToResponses(request.Tools)
+		if err != nil {
+			return nil, err
+		}
+		responsesReq.Tools = toolsJSON
+	}
+
+	// Convert tool_choice
+	if request.ToolChoice != nil {
+		tcJSON, err := convertClaudeToolChoiceToResponses(request.ToolChoice)
+		if err != nil {
+			return nil, err
+		}
+		responsesReq.ToolChoice = tcJSON
+	}
+
+	// Convert reasoning effort from output_config
+	effort := "high"
+	if request.OutputConfig != nil {
+		var cfg struct {
+			Effort string `json:"effort"`
+		}
+		if err := json.Unmarshal(request.OutputConfig, &cfg); err == nil && cfg.Effort != "" {
+			effort = cfg.Effort
+		}
+	}
+	if effort == "max" {
+		effort = "xhigh"
+	}
+	responsesReq.Reasoning = &dto.Reasoning{
+		Effort:  effort,
+		Summary: "auto",
+	}
+
 	responsesReq.Store = json.RawMessage("false")
 
 	return responsesReq, nil
 }
 
-// extractTextContent extracts plain text from Claude message content
+// extractTextContent extracts plain text from Claude message content (fallback)
 func extractTextContent(msg dto.ClaudeMessage) string {
 	if msg.IsStringContent() {
 		return msg.GetStringContent()
 	}
-	// Array content - extract text blocks only
 	content, _ := msg.ParseContent()
 	var sb strings.Builder
 	for _, media := range content {
@@ -116,7 +485,6 @@ func extractOpenAIMessageContent(msg dto.Message) string {
 	if msg.IsStringContent() {
 		return msg.StringContent()
 	}
-	// Array content - extract text blocks only
 	content := msg.ParseContent()
 	var sb strings.Builder
 	for _, media := range content {
@@ -139,14 +507,13 @@ func (a *Adaptor) Init(info *relaycommon.RelayInfo) {
 }
 
 func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayInfo, request *dto.GeneralOpenAIRequest) (any, error) {
-	// Ensure RelayMode is set to Responses for Codex channel
 	info.RelayMode = relayconstant.RelayModeResponses
 	info.FinalRequestRelayFormat = types.RelayFormatOpenAIResponses
 	info.IsStream = true
 
 	responsesReq := &dto.OpenAIResponsesRequest{
 		Model:  request.Model,
-		Stream: lo.ToPtr(true), // Codex requires stream=true
+		Stream: func(b bool) *bool { return &b }(true),
 	}
 
 	// Convert system prompt to instructions
@@ -175,7 +542,6 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 		}
 	}
 
-	// Default instructions
 	if len(responsesReq.Instructions) == 0 {
 		responsesReq.Instructions = json.RawMessage(`""`)
 	}
@@ -184,7 +550,7 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 	input := make([]any, 0)
 	for _, msg := range request.Messages {
 		if msg.Role == request.GetSystemRoleName() {
-			continue // skip system message
+			continue
 		}
 		contentStr := extractOpenAIMessageContent(msg)
 		input = append(input, map[string]any{
@@ -197,7 +563,6 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 		responsesReq.Input = b
 	}
 
-	// Copy other fields from original request
 	responsesReq.Store = json.RawMessage("false")
 	if request.Stream != nil {
 		responsesReq.Stream = request.Stream
@@ -252,8 +617,6 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 			}
 		}
 	}
-	// Codex backend requires the `instructions` field to be present.
-	// Keep it consistent with Codex CLI behavior by defaulting to an empty string.
 	if len(request.Instructions) == 0 {
 		request.Instructions = json.RawMessage(`""`)
 	}
@@ -261,9 +624,7 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 	if isCompact {
 		return request, nil
 	}
-	// codex: store must be false
 	request.Store = json.RawMessage("false")
-	// rm max_output_tokens
 	request.MaxOutputTokens = nil
 	request.Temperature = nil
 	return request, nil
@@ -282,12 +643,10 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycom
 		return openai.OaiResponsesCompactionHandler(c, resp)
 	}
 
-	// If original request was Claude format, convert response back to Claude SSE
 	if info.RelayFormat == types.RelayFormatClaude {
 		return openai.ResponsesToClaudeStreamHandler(c, info, resp)
 	}
 
-	// If original request was Chat Completions, convert response back to Chat format
 	if info.RelayFormat == types.RelayFormatOpenAI {
 		if info.IsStream {
 			return openai.OaiResponsesToChatStreamHandler(c, info, resp)
@@ -353,9 +712,6 @@ func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Header, info *rel
 		req.Set("originator", "codex_cli_rs")
 	}
 
-	// chatgpt.com/backend-api/codex/responses is strict about Content-Type.
-	// Clients may omit it or include parameters like `application/json; charset=utf-8`,
-	// which can be rejected by the upstream. Force the exact media type.
 	req.Set("Content-Type", "application/json")
 	if info.IsStream {
 		req.Set("Accept", "text/event-stream")
