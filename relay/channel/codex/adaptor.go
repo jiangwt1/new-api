@@ -218,7 +218,7 @@ func convertClaudeAssistantMessage(msg dto.ClaudeMessage) ([]map[string]any, err
 			items = append(items, map[string]any{
 				"type":    "message",
 				"role":    "assistant",
-				"content": partsJSON,
+				"content": json.RawMessage(partsJSON),
 			})
 		}
 		return items, nil
@@ -251,7 +251,7 @@ func convertClaudeAssistantMessage(msg dto.ClaudeMessage) ([]map[string]any, err
 		items = append(items, map[string]any{
 			"type":    "message",
 			"role":    "assistant",
-			"content": partsJSON,
+			"content": json.RawMessage(partsJSON),
 		})
 	}
 
@@ -341,7 +341,7 @@ func convertClaudeUserMessage(msg dto.ClaudeMessage) ([]map[string]any, error) {
 		items = append(items, map[string]any{
 			"type":    "message",
 			"role":    "user",
-			"content": partsJSON,
+			"content": json.RawMessage(partsJSON),
 		})
 	}
 
