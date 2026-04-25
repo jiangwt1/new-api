@@ -959,6 +959,8 @@ func ClaudeHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayI
 	if handleErr != nil {
 		return nil, handleErr
 	}
+common.SysLog(fmt.Sprintf("====== [Claude非流式] 完成 ====== 输入token=%d, 输出token=%d, 模型=%s",
+      claudeInfo.Usage.PromptTokens, claudeInfo.Usage.CompletionTokens, info.UpstreamModelName))
 	return claudeInfo.Usage, nil
 }
 
