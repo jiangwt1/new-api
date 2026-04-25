@@ -485,7 +485,7 @@ func StreamResponseClaude2OpenAI(claudeResponse *dto.ClaudeResponse) *dto.ChatCo
 					Type:  "function",
 					Index: common.GetPointer(fcIdx),
 					Function: dto.FunctionResponse{
-						Arguments: *claudeResponse.Delta.PartialJson,
+						Arguments: common.SafeDerefString(claudeResponse.Delta.PartialJson),
 					},
 				})
 			case "signature_delta":
@@ -875,9 +875,12 @@ func ClaudeStreamHandler(c *gin.Context, resp *http.Response, info *relaycommon.
 		Usage:        &dto.Usage{},
 	}
 	var err *types.NewAPIError
+	eventCount := 0
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
+		eventCount++
 		err = HandleStreamResponseData(c, info, claudeInfo, data)
 		if err != nil {
+			logger.LogError(c, fmt.Sprintf("[Claude流] 第%d个事件出错: %s", eventCount, err.Error()))
 			sr.Stop(err)
 		}
 	})
@@ -886,6 +889,8 @@ func ClaudeStreamHandler(c *gin.Context, resp *http.Response, info *relaycommon.
 	}
 
 	HandleStreamFinalResponse(c, info, claudeInfo)
+	logger.LogInfo(c, fmt.Sprintf("[Claude流] 完成: 事件数=%d, 输入token=%d, 输出token=%d, 模型=%s",
+		eventCount, claudeInfo.Usage.PromptTokens, claudeInfo.Usage.CompletionTokens, info.UpstreamModelName))
 	return claudeInfo.Usage, nil
 }
 

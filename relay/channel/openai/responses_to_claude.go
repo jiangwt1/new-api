@@ -8,6 +8,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/logger"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/service"
@@ -26,8 +27,11 @@ func ResponsesToClaudeStreamHandler(c *gin.Context, info *relaycommon.RelayInfo,
 
 	var usage = &dto.Usage{}
 	state := newClaudeStreamState()
+	eventCount := 0
+	claudeEventCount := 0
 
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
+		eventCount++
 		var event dto.ResponsesStreamResponse
 		if err := common.UnmarshalJsonStr(data, &event); err != nil {
 			sr.Error(err)
@@ -36,6 +40,7 @@ func ResponsesToClaudeStreamHandler(c *gin.Context, info *relaycommon.RelayInfo,
 
 		claudeEvents := convertResponsesEventToClaude(&event, state)
 		for _, evt := range claudeEvents {
+			claudeEventCount++
 			evtJSON, err := json.Marshal(evt)
 			if err != nil {
 				sr.Error(err)
@@ -49,6 +54,7 @@ func ResponsesToClaudeStreamHandler(c *gin.Context, info *relaycommon.RelayInfo,
 
 	// Finalize stream if not already closed
 	if !state.MessageStopSent {
+		logger.LogError(c, fmt.Sprintf("[Codex→Claude] 流异常结束(未收到message_stop)，自动补发结束事件: 上游事件数=%d, 转换事件数=%d", eventCount, claudeEventCount))
 		finalEvents := finalizeClaudeStream(state, usage)
 		for _, evt := range finalEvents {
 			evtJSON, _ := json.Marshal(evt)
@@ -63,6 +69,8 @@ func ResponsesToClaudeStreamHandler(c *gin.Context, info *relaycommon.RelayInfo,
 		usage.PromptTokensDetails.CachedTokens = state.CacheReadTokens
 	}
 
+	logger.LogInfo(c, fmt.Sprintf("[Codex→Claude] 完成: 上游事件数=%d, 转换事件数=%d, 输入token=%d, 输出token=%d, 模型=%s",
+		eventCount, claudeEventCount, usage.PromptTokens, usage.OutputTokens, info.UpstreamModelName))
 	return usage, nil
 }
 

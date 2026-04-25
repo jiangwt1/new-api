@@ -288,6 +288,13 @@ func GetPointer[T any](v T) *T {
 	return &v
 }
 
+func SafeDerefString(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+
 func Any2Type[T any](data any) (T, error) {
 	var zero T
 	bytes, err := json.Marshal(data)
