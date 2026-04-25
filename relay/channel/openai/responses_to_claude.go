@@ -55,6 +55,12 @@ func ResponsesToClaudeStreamHandler(c *gin.Context, info *relaycommon.RelayInfo,
 			c.Writer.Write([]byte(fmt.Sprintf("event: %s\ndata: %s\n\n", evt.Type, evtJSON)))
 			c.Writer.Flush()
 		}
+	} else {
+		// Stream completed normally via handleResponseCompleted — copy usage from state
+		usage.PromptTokens = state.InputTokens
+		usage.OutputTokens = state.OutputTokens
+		usage.TotalTokens = state.InputTokens + state.OutputTokens
+		usage.PromptTokensDetails.CachedTokens = state.CacheReadTokens
 	}
 
 	return usage, nil
@@ -107,13 +113,14 @@ type ClaudeStreamMessage struct {
 
 // ClaudeStreamContentBlock represents a content block
 type ClaudeStreamContentBlock struct {
-	Type     string                 `json:"type"`
-	Index    *int                   `json:"index,omitempty"`
-	ID       string                 `json:"id,omitempty"`
-	Name     string                 `json:"name,omitempty"`
-	Input    json.RawMessage        `json:"input,omitempty"`
-	Thinking string                 `json:"thinking,omitempty"`
-	Text     string                 `json:"text,omitempty"`
+	Type      string          `json:"type"`
+	Index     *int            `json:"index,omitempty"`
+	ID        string          `json:"id,omitempty"`
+	Name      string          `json:"name,omitempty"`
+	Input     json.RawMessage `json:"input,omitempty"`
+	Thinking  string          `json:"thinking,omitempty"`
+	Text      string          `json:"text,omitempty"`
+	ToolUseID string          `json:"tool_use_id,omitempty"`
 }
 
 // ClaudeStreamDelta represents delta data
@@ -127,8 +134,9 @@ type ClaudeStreamDelta struct {
 
 // ClaudeStreamUsage represents usage information
 type ClaudeStreamUsage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
+	InputTokens          int `json:"input_tokens"`
+	OutputTokens         int `json:"output_tokens"`
+	CacheReadInputTokens int `json:"cache_read_input_tokens,omitempty"`
 }
 
 func convertResponsesEventToClaude(event *dto.ResponsesStreamResponse, state *claudeStreamState) []ClaudeStreamEvent {
@@ -143,9 +151,11 @@ func convertResponsesEventToClaude(event *dto.ResponsesStreamResponse, state *cl
 		return handleOutputItemDone(event, state)
 	case "response.function_call_arguments.delta":
 		return handleFunctionCallArgumentsDelta(event, state)
+	case "response.function_call_arguments.done":
+		return handleFunctionCallArgumentsDone(state)
 	case "response.reasoning_summary_text.delta":
 		return handleReasoningDelta(event, state)
-	case "response.completed", "response.incomplete":
+	case "response.completed", "response.incomplete", "response.failed":
 		return handleResponseCompleted(event, state)
 	default:
 		return nil
@@ -283,7 +293,60 @@ func handleOutputTextDelta(event *dto.ResponsesStreamResponse, state *claudeStre
 }
 
 func handleOutputItemDone(event *dto.ResponsesStreamResponse, state *claudeStreamState) []ClaudeStreamEvent {
+	if event.Item != nil && event.Item.Type == "web_search_call" && event.Item.Status == "completed" {
+		return handleWebSearchDone(event, state)
+	}
 	return closeCurrentBlock(state)
+}
+
+func handleWebSearchDone(event *dto.ResponsesStreamResponse, state *claudeStreamState) []ClaudeStreamEvent {
+	var events []ClaudeStreamEvent
+	events = append(events, closeCurrentBlock(state)...)
+
+	toolUseID := "srvtoolu_" + event.Item.ID
+	query := ""
+	if event.Item.Action != nil {
+		query = event.Item.Action.Query
+	}
+	inputJSON, _ := json.Marshal(map[string]string{"query": query})
+
+	// Emit server_tool_use block (start + stop)
+	idx1 := state.ContentBlockIndex
+	events = append(events, ClaudeStreamEvent{
+		Type:  "content_block_start",
+		Index: &idx1,
+		ContentBlock: &ClaudeStreamContentBlock{
+			Type:  "server_tool_use",
+			ID:    toolUseID,
+			Name:  "web_search",
+			Input: inputJSON,
+		},
+	})
+	events = append(events, ClaudeStreamEvent{
+		Type:  "content_block_stop",
+		Index: &idx1,
+	})
+	state.ContentBlockIndex++
+
+	// Emit web_search_tool_result block (start + stop)
+	emptyResults, _ := json.Marshal([]struct{}{})
+	idx2 := state.ContentBlockIndex
+	events = append(events, ClaudeStreamEvent{
+		Type:  "content_block_start",
+		Index: &idx2,
+		ContentBlock: &ClaudeStreamContentBlock{
+			Type:      "web_search_tool_result",
+			ToolUseID: toolUseID,
+			Input:     emptyResults,
+		},
+	})
+	events = append(events, ClaudeStreamEvent{
+		Type:  "content_block_stop",
+		Index: &idx2,
+	})
+	state.ContentBlockIndex++
+
+	return events
 }
 
 func handleFunctionCallArgumentsDelta(event *dto.ResponsesStreamResponse, state *claudeStreamState) []ClaudeStreamEvent {
@@ -309,6 +372,10 @@ func handleFunctionCallArgumentsDelta(event *dto.ResponsesStreamResponse, state 
 			},
 		},
 	}
+}
+
+func handleFunctionCallArgumentsDone(state *claudeStreamState) []ClaudeStreamEvent {
+	return closeCurrentBlock(state)
 }
 
 func handleReasoningDelta(event *dto.ResponsesStreamResponse, state *claudeStreamState) []ClaudeStreamEvent {
@@ -356,7 +423,7 @@ func handleResponseCompleted(event *dto.ResponsesStreamResponse, state *claudeSt
 		status := string(event.Response.Status)
 		switch status {
 		case `"incomplete"`:
-			if event.Response.IncompleteDetails != nil && event.Response.IncompleteDetails.Reasoning == "max_output_tokens" {
+			if event.Response.IncompleteDetails != nil && event.Response.IncompleteDetails.Reason == "max_output_tokens" {
 				stopReason = "max_tokens"
 			}
 		case `"completed"`:
@@ -372,8 +439,9 @@ func handleResponseCompleted(event *dto.ResponsesStreamResponse, state *claudeSt
 			StopReason: stopReason,
 		},
 		Usage: &ClaudeStreamUsage{
-			InputTokens:  state.InputTokens,
-			OutputTokens: state.OutputTokens,
+			InputTokens:          state.InputTokens,
+			OutputTokens:         state.OutputTokens,
+			CacheReadInputTokens: state.CacheReadTokens,
 		},
 	}, ClaudeStreamEvent{
 		Type: "message_stop",
@@ -397,8 +465,9 @@ func finalizeClaudeStream(state *claudeStreamState, usage *dto.Usage) []ClaudeSt
 			StopReason: "end_turn",
 		},
 		Usage: &ClaudeStreamUsage{
-			InputTokens:  state.InputTokens,
-			OutputTokens: state.OutputTokens,
+			InputTokens:          state.InputTokens,
+			OutputTokens:         state.OutputTokens,
+			CacheReadInputTokens: state.CacheReadTokens,
 		},
 	}, ClaudeStreamEvent{
 		Type: "message_stop",

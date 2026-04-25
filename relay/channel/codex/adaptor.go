@@ -353,7 +353,10 @@ func (a *Adaptor) ConvertGeminiRequest(c *gin.Context, info *relaycommon.RelayIn
 }
 
 func (a *Adaptor) ConvertClaudeRequest(c *gin.Context, info *relaycommon.RelayInfo, request *dto.ClaudeRequest) (any, error) {
-	info.RelayMode = relayconstant.RelayModeResponses
+	// Preserve compact mode if set by model name mapping
+	if info.RelayMode != relayconstant.RelayModeResponsesCompact {
+		info.RelayMode = relayconstant.RelayModeResponses
+	}
 	info.FinalRequestRelayFormat = types.RelayFormatOpenAIResponses
 	info.IsStream = true
 
@@ -459,6 +462,7 @@ func (a *Adaptor) ConvertClaudeRequest(c *gin.Context, info *relaycommon.RelayIn
 		Effort:  effort,
 		Summary: "auto",
 	}
+	responsesReq.Include = json.RawMessage(`["reasoning.encrypted_content"]`)
 
 	responsesReq.Store = json.RawMessage("false")
 

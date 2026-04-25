@@ -332,7 +332,7 @@ func (o *OpenAIResponsesResponse) GetSize() string {
 }
 
 type IncompleteDetails struct {
-	Reasoning string `json:"reasoning"`
+	Reason string `json:"reason"`
 }
 
 type ResponsesOutput struct {
@@ -346,6 +346,11 @@ type ResponsesOutput struct {
 	CallId    string                   `json:"call_id,omitempty"`
 	Name      string                   `json:"name,omitempty"`
 	Arguments string                   `json:"arguments,omitempty"`
+	Action    *ResponsesWebSearchAction `json:"action,omitempty"`
+}
+
+type ResponsesWebSearchAction struct {
+	Query string `json:"query"`
 }
 
 type ResponsesOutputContent struct {
