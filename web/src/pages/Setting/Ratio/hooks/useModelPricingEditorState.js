@@ -554,8 +554,7 @@ export function useModelPricingEditorState({
       AudioCompletionRatio: parseOptionJSON(options.AudioCompletionRatio),
     };
 
-    const names = new Set([
-      ...candidateModelNames,
+    const optionNames = new Set([
       ...Object.keys(sourceMaps.ModelPrice),
       ...Object.keys(sourceMaps.ModelRatio),
       ...Object.keys(sourceMaps.CompletionRatio),
@@ -566,6 +565,9 @@ export function useModelPricingEditorState({
       ...Object.keys(sourceMaps.AudioRatio),
       ...Object.keys(sourceMaps.AudioCompletionRatio),
     ]);
+    const names = candidateModelNames.length > 0
+      ? new Set(candidateModelNames)
+      : new Set([...candidateModelNames, ...optionNames]);
 
     const nextModels = Array.from(names)
       .map((name) => buildModelState(name, sourceMaps))

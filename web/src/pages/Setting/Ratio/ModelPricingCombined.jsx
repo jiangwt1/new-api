@@ -17,15 +17,34 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Radio, RadioGroup } from '@douyinfe/semi-ui';
 import { useTranslation } from 'react-i18next';
+import { API, showError } from '../../../helpers';
 import ModelPricingEditor from './components/ModelPricingEditor';
 import ModelRatioSettings from './ModelRatioSettings';
 
 export default function ModelPricingCombined({ options, refresh }) {
   const { t } = useTranslation();
   const [editMode, setEditMode] = useState('visual');
+  const [enabledModels, setEnabledModels] = useState([]);
+
+  useEffect(() => {
+    const fetchEnabledModels = async () => {
+      try {
+        const res = await API.get('/api/channel/models_enabled');
+        const { success, message, data } = res.data;
+        if (success) {
+          setEnabledModels(data);
+        } else {
+          showError(message);
+        }
+      } catch (error) {
+        console.error('Failed to fetch enabled models:', error);
+      }
+    };
+    fetchEnabledModels();
+  }, []);
 
   return (
     <div>
@@ -41,7 +60,7 @@ export default function ModelPricingCombined({ options, refresh }) {
         </RadioGroup>
       </div>
       {editMode === 'visual' ? (
-        <ModelPricingEditor options={options} refresh={refresh} />
+        <ModelPricingEditor options={options} refresh={refresh} candidateModelNames={enabledModels} />
       ) : (
         <ModelRatioSettings options={options} refresh={refresh} />
       )}
