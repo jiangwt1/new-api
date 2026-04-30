@@ -906,24 +906,40 @@ export function useModelPricingEditorState({
   const handleSubmit = async () => {
     setLoading(true);
     try {
-      const output = {
-        ModelPrice: {},
-        ModelRatio: {},
-        CompletionRatio: {},
-        CacheRatio: {},
-        CreateCacheRatio: {},
-        ImageRatio: {},
-        AudioRatio: {},
-        AudioCompletionRatio: {},
+      const sourceMaps = {
+        ModelPrice: parseOptionJSON(options.ModelPrice),
+        ModelRatio: parseOptionJSON(options.ModelRatio),
+        CompletionRatio: parseOptionJSON(options.CompletionRatio),
+        CacheRatio: parseOptionJSON(options.CacheRatio),
+        CreateCacheRatio: parseOptionJSON(options.CreateCacheRatio),
+        ImageRatio: parseOptionJSON(options.ImageRatio),
+        AudioRatio: parseOptionJSON(options.AudioRatio),
+        AudioCompletionRatio: parseOptionJSON(options.AudioCompletionRatio),
       };
 
+      const output = {};
+      for (const key of Object.keys(sourceMaps)) {
+        output[key] = { ...sourceMaps[key] };
+      }
+
+      const modelNames = new Set(models.map((m) => m.name));
       for (const model of models) {
         const serialized = serializeModel(model, t);
-        Object.entries(serialized).forEach(([key, value]) => {
+        for (const [key, value] of Object.entries(serialized)) {
           if (value !== null) {
             output[key][model.name] = value;
+          } else {
+            delete output[key][model.name];
           }
-        });
+        }
+      }
+
+      for (const key of Object.keys(sourceMaps)) {
+        for (const name of Object.keys(sourceMaps[key])) {
+          if (!modelNames.has(name)) {
+            output[key][name] = sourceMaps[key][name];
+          }
+        }
       }
 
       const requestQueue = Object.entries(output).map(([key, value]) =>
