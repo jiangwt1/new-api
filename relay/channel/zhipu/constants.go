@@ -1,7 +1,7 @@
 package zhipu
 
 var ModelList = []string{
-	"chatglm_turbo", "chatglm_pro", "chatglm_std", "chatglm_lite",
+	"glm-5", "glm-4.7", "glm-4.7-flash", "glm-4.6", "glm-4.6v",
 }
 
 var ChannelName = "zhipu"

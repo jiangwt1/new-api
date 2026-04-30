@@ -355,8 +355,9 @@ export function getChannelIcon(channelType) {
       return <Qwen.Color size={iconSize} />;
     case 18: // 讯飞星火认知
       return <Spark.Color size={iconSize} />;
-    case 16: // 智谱 ChatGLM
-    case 26: // 智谱 GLM-4V
+    case 16: // 小米 MiMo
+      return null;
+    case 26: // 智谱
       return <Zhipu.Color size={iconSize} />;
     case 24: // Google Gemini
     case 11: // Google PaLM2

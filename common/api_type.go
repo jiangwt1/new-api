@@ -13,8 +13,6 @@ func ChannelType2APIType(channelType int) (int, bool) {
 		apiType = constant.APITypeBaidu
 	case constant.ChannelTypePaLM:
 		apiType = constant.APITypePaLM
-	case constant.ChannelTypeZhipu:
-		apiType = constant.APITypeZhipu
 	case constant.ChannelTypeAli:
 		apiType = constant.APITypeAli
 	case constant.ChannelTypeXunfei:
@@ -26,7 +24,7 @@ func ChannelType2APIType(channelType int) (int, bool) {
 	case constant.ChannelTypeGemini:
 		apiType = constant.APITypeGemini
 	case constant.ChannelTypeZhipu_v4:
-		apiType = constant.APITypeZhipuV4
+		apiType = constant.APITypeZhipu
 	case constant.ChannelTypeOllama:
 		apiType = constant.APITypeOllama
 	case constant.ChannelTypePerplexity:
@@ -75,6 +73,8 @@ func ChannelType2APIType(channelType int) (int, bool) {
 		apiType = constant.APITypeReplicate
 	case constant.ChannelTypeCodex:
 		apiType = constant.APITypeCodex
+	case constant.ChannelTypeXiaomi:
+		apiType = constant.APITypeXiaomi
 	}
 	if apiType == -1 {
 		return constant.APITypeOpenAI, false

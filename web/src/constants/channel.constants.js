@@ -80,13 +80,13 @@ export const CHANNEL_OPTIONS = [
   },
   {
     value: 16,
-    color: 'violet',
-    label: '智谱 ChatGLM（已经弃用，请使用智谱 GLM-4V）',
+    color: 'orange',
+    label: '小米 MiMo',
   },
   {
     value: 26,
     color: 'purple',
-    label: '智谱 GLM-4V',
+    label: '智谱 GLM',
   },
   {
     value: 27,

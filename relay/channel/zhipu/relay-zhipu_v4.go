@@ -1,4 +1,4 @@
-package zhipu_4v
+package zhipu
 
 import (
 	"strings"

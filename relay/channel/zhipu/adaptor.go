@@ -6,9 +6,13 @@ import (
 	"io"
 	"net/http"
 
+	channelconstant "github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/relay/channel"
+	"github.com/QuantumNous/new-api/relay/channel/claude"
+	"github.com/QuantumNous/new-api/relay/channel/openai"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/types"
 	"github.com/samber/lo"
 
@@ -23,10 +27,8 @@ func (a *Adaptor) ConvertGeminiRequest(*gin.Context, *relaycommon.RelayInfo, *dt
 	return nil, errors.New("not implemented")
 }
 
-func (a *Adaptor) ConvertClaudeRequest(*gin.Context, *relaycommon.RelayInfo, *dto.ClaudeRequest) (any, error) {
-	//TODO implement me
-	panic("implement me")
-	return nil, nil
+func (a *Adaptor) ConvertClaudeRequest(c *gin.Context, info *relaycommon.RelayInfo, req *dto.ClaudeRequest) (any, error) {
+	return req, nil
 }
 
 func (a *Adaptor) ConvertAudioRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.AudioRequest) (io.Reader, error) {
@@ -35,25 +37,49 @@ func (a *Adaptor) ConvertAudioRequest(c *gin.Context, info *relaycommon.RelayInf
 }
 
 func (a *Adaptor) ConvertImageRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.ImageRequest) (any, error) {
-	//TODO implement me
-	return nil, errors.New("not implemented")
+	return request, nil
 }
 
 func (a *Adaptor) Init(info *relaycommon.RelayInfo) {
 }
 
 func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
-	method := "invoke"
-	if info.IsStream {
-		method = "sse-invoke"
+	baseURL := info.ChannelBaseUrl
+	if baseURL == "" {
+		baseURL = channelconstant.ChannelBaseURLs[channelconstant.ChannelTypeZhipu_v4]
 	}
-	return fmt.Sprintf("%s/api/paas/v3/model-api/%s/%s", info.ChannelBaseUrl, info.UpstreamModelName, method), nil
+	specialPlan, hasSpecialPlan := channelconstant.ChannelSpecialBases[baseURL]
+
+	switch info.RelayFormat {
+	case types.RelayFormatClaude:
+		if hasSpecialPlan && specialPlan.ClaudeBaseURL != "" {
+			return fmt.Sprintf("%s/v1/messages", specialPlan.ClaudeBaseURL), nil
+		}
+		return fmt.Sprintf("%s/api/anthropic/v1/messages", baseURL), nil
+	default:
+		switch info.RelayMode {
+		case relayconstant.RelayModeEmbeddings:
+			if hasSpecialPlan && specialPlan.OpenAIBaseURL != "" {
+				return fmt.Sprintf("%s/embeddings", specialPlan.OpenAIBaseURL), nil
+			}
+			return fmt.Sprintf("%s/api/paas/v4/embeddings", baseURL), nil
+		case relayconstant.RelayModeImagesGenerations:
+			if hasSpecialPlan && specialPlan.OpenAIBaseURL != "" {
+				return fmt.Sprintf("%s/images/generations", specialPlan.OpenAIBaseURL), nil
+			}
+			return fmt.Sprintf("%s/api/paas/v4/images/generations", baseURL), nil
+		default:
+			if hasSpecialPlan && specialPlan.OpenAIBaseURL != "" {
+				return fmt.Sprintf("%s/chat/completions", specialPlan.OpenAIBaseURL), nil
+			}
+			return fmt.Sprintf("%s/api/paas/v4/chat/completions", baseURL), nil
+		}
+	}
 }
 
 func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Header, info *relaycommon.RelayInfo) error {
 	channel.SetupApiRequestHeader(info, c, req)
-	token := getZhipuToken(info.ApiKey)
-	req.Set("Authorization", token)
+	req.Set("Authorization", "Bearer "+info.ApiKey)
 	return nil
 }
 
@@ -72,12 +98,7 @@ func (a *Adaptor) ConvertRerankRequest(c *gin.Context, relayMode int, request dt
 }
 
 func (a *Adaptor) ConvertEmbeddingRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.EmbeddingRequest) (any, error) {
-	//TODO implement me
-	return nil, errors.New("not implemented")
-}
-
-func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, requestBody io.Reader) (any, error) {
-	return channel.DoApiRequest(a, c, info, requestBody)
+	return request, nil
 }
 
 func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.OpenAIResponsesRequest) (any, error) {
@@ -85,13 +106,22 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 	return nil, errors.New("not implemented")
 }
 
+func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, requestBody io.Reader) (any, error) {
+	return channel.DoApiRequest(a, c, info, requestBody)
+}
+
 func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (usage any, err *types.NewAPIError) {
-	if info.IsStream {
-		usage, err = zhipuStreamHandler(c, info, resp)
-	} else {
-		usage, err = zhipuHandler(c, info, resp)
+	switch info.RelayFormat {
+	case types.RelayFormatClaude:
+		adaptor := claude.Adaptor{}
+		return adaptor.DoResponse(c, resp, info)
+	default:
+		if info.RelayMode == relayconstant.RelayModeImagesGenerations {
+			return zhipu4vImageHandler(c, resp, info)
+		}
+		adaptor := openai.Adaptor{}
+		return adaptor.DoResponse(c, resp, info)
 	}
-	return
 }
 
 func (a *Adaptor) GetModelList() []string {

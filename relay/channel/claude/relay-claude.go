@@ -434,7 +434,7 @@ func RequestOpenAI2ClaudeMessage(c *gin.Context, textRequest dto.GeneralOpenAIRe
 	return &claudeRequest, nil
 }
 
-func StreamResponseClaude2OpenAI(claudeResponse *dto.ClaudeResponse) *dto.ChatCompletionsStreamResponse {
+func StreamResponseClaude2OpenAI(claudeResponse *dto.ClaudeResponse, claudeInfo *ClaudeResponseInfo) *dto.ChatCompletionsStreamResponse {
 	var response dto.ChatCompletionsStreamResponse
 	response.Object = "chat.completion.chunk"
 	response.Model = claudeResponse.Model
@@ -463,6 +463,14 @@ func StreamResponseClaude2OpenAI(claudeResponse *dto.ClaudeResponse) *dto.ChatCo
 				choice.Delta.SetContentString(*claudeResponse.ContentBlock.Text)
 			}
 			if claudeResponse.ContentBlock.Type == "tool_use" {
+				// 缓存 tool_use ID
+				if claudeInfo != nil {
+					if claudeInfo.CurrentToolUseIds == nil {
+						claudeInfo.CurrentToolUseIds = make(map[int]string)
+					}
+					claudeInfo.CurrentToolUseIds[fcIdx] = claudeResponse.ContentBlock.Id
+					common.SysLog(fmt.Sprintf("缓存 tool_use ID: index=%d, id=%s", fcIdx, claudeResponse.ContentBlock.Id))
+				}
 				tools = append(tools, dto.ToolCallResponse{
 					Index: common.GetPointer(fcIdx),
 					ID:    claudeResponse.ContentBlock.Id,
@@ -481,9 +489,15 @@ func StreamResponseClaude2OpenAI(claudeResponse *dto.ClaudeResponse) *dto.ChatCo
 			choice.Delta.Content = claudeResponse.Delta.Text
 			switch claudeResponse.Delta.Type {
 			case "input_json_delta":
+				toolCallID := ""
+				if claudeInfo != nil && claudeInfo.CurrentToolUseIds != nil {
+					toolCallID = claudeInfo.CurrentToolUseIds[fcIdx]
+					common.SysLog(fmt.Sprintf("使用 tool_use ID: index=%d, id=%s", fcIdx, toolCallID))
+				}
 				tools = append(tools, dto.ToolCallResponse{
 					Type:  "function",
 					Index: common.GetPointer(fcIdx),
+					ID:    toolCallID,
 					Function: dto.FunctionResponse{
 						Arguments: common.SafeDerefString(claudeResponse.Delta.PartialJson),
 					},
@@ -580,12 +594,13 @@ func ResponseClaude2OpenAI(claudeResponse *dto.ClaudeResponse) *dto.OpenAITextRe
 }
 
 type ClaudeResponseInfo struct {
-	ResponseId   string
-	Created      int64
-	Model        string
-	ResponseText strings.Builder
-	Usage        *dto.Usage
-	Done         bool
+	ResponseId       string
+	Created          int64
+	Model            string
+	ResponseText     strings.Builder
+	Usage            *dto.Usage
+	Done             bool
+	CurrentToolUseIds map[int]string // 缓存每个 index 的 tool_use ID
 }
 
 func cacheCreationTokensForOpenAIUsage(usage *dto.Usage) int {
@@ -814,7 +829,7 @@ func HandleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 		}
 		helper.ClaudeChunkData(c, claudeResponse, data)
 	} else if info.RelayFormat == types.RelayFormatOpenAI {
-		response := StreamResponseClaude2OpenAI(&claudeResponse)
+		response := StreamResponseClaude2OpenAI(&claudeResponse, claudeInfo)
 
 		if !FormatClaudeResponseInfo(&claudeResponse, response, claudeInfo) {
 			return nil

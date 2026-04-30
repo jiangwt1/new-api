@@ -17,7 +17,7 @@ const (
 	ChannelTypeAIGC2D         = 13
 	ChannelTypeAnthropic      = 14
 	ChannelTypeBaidu          = 15
-	ChannelTypeZhipu          = 16
+	ChannelTypeXiaomi         = 16
 	ChannelTypeAli            = 17
 	ChannelTypeXunfei         = 18
 	ChannelType360            = 19
@@ -76,7 +76,7 @@ var ChannelBaseURLs = []string{
 	"https://api.aigc2d.com",              // 13
 	"https://api.anthropic.com",           // 14
 	"https://aip.baidubce.com",            // 15
-	"https://open.bigmodel.cn",            // 16
+	"https://token-plan-cn.xiaomimimo.com", // 16
 	"https://dashscope.aliyuncs.com",      // 17
 	"",                                    // 18
 	"https://api.360.cn",                  // 19
@@ -137,7 +137,7 @@ var ChannelTypeNames = map[int]string{
 	ChannelTypeAIGC2D:         "AIGC2D",
 	ChannelTypeAnthropic:      "Anthropic",
 	ChannelTypeBaidu:          "Baidu",
-	ChannelTypeZhipu:          "Zhipu",
+	ChannelTypeXiaomi:         "Xiaomi",
 	ChannelTypeAli:            "Ali",
 	ChannelTypeXunfei:         "Xunfei",
 	ChannelType360:            "360",
@@ -147,7 +147,7 @@ var ChannelTypeNames = map[int]string{
 	ChannelTypeTencent:        "Tencent",
 	ChannelTypeGemini:         "Gemini",
 	ChannelTypeMoonshot:       "Moonshot",
-	ChannelTypeZhipu_v4:       "ZhipuV4",
+	ChannelTypeZhipu_v4:       "Zhipu",
 	ChannelTypePerplexity:     "Perplexity",
 	ChannelTypeLingYiWanWu:    "LingYiWanWu",
 	ChannelTypeAws:            "AWS",

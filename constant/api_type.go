@@ -11,7 +11,7 @@ const (
 	APITypeAIProxyLibrary
 	APITypeTencent
 	APITypeGemini
-	APITypeZhipuV4
+	APITypeXiaomi
 	APITypeOllama
 	APITypePerplexity
 	APITypeAws
