@@ -52,6 +52,9 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 
 	streamingTimeout := time.Duration(constant.StreamingTimeout) * time.Second
 
+	thinkingInterval := 30 * time.Second
+	thinkingTicker := time.NewTicker(thinkingInterval)
+
 	var (
 		stopChan   = make(chan bool, 3) // 增加缓冲区避免阻塞
 		scanner    = bufio.NewScanner(resp.Body)
@@ -87,6 +90,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 		common.SafeSendBool(stopChan, true)
 
 		ticker.Stop()
+		thinkingTicker.Stop()
 		if pingTicker != nil {
 			pingTicker.Stop()
 		}
@@ -282,13 +286,23 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	})
 
 	// 主循环等待完成或超时
-	select {
-	case <-ticker.C:
-		info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonTimeout, nil)
-	case <-stopChan:
-		// EndReason already set by the goroutine that triggered stopChan
-	case <-c.Request.Context().Done():
-		info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, c.Request.Context().Err())
+loop:
+	for {
+		select {
+		case <-ticker.C:
+			info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonTimeout, nil)
+			break loop
+		case <-stopChan:
+			// EndReason already set by the goroutine that triggered stopChan
+			break loop
+		case <-c.Request.Context().Done():
+			info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, c.Request.Context().Err())
+			break loop
+		case <-thinkingTicker.C:
+			elapsed := time.Since(info.StartTime).Truncate(time.Second)
+			logger.LogInfo(c, fmt.Sprintf("[思考中] 等待上游流式数据 | model=%s | userId=%d | userEmail=%s | 耗时=%v | 已收到%d个事件 | requestId=%s",
+				info.UpstreamModelName, info.UserId, info.UserEmail, elapsed, info.ReceivedResponseCount, info.RequestId))
+		}
 	}
 
 	if info.StreamStatus.IsNormalEnd() && !info.StreamStatus.HasErrors() {

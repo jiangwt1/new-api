@@ -517,7 +517,35 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 		}
 	}
 
-	resp, err := client.Do(req)
+	// 发起请求，定期打印"还在思考"日志
+	type doResult struct {
+		resp *http.Response
+		err  error
+	}
+	resultCh := make(chan doResult, 1)
+	go func() {
+		r, e := client.Do(req)
+		resultCh <- doResult{resp: r, err: e}
+	}()
+
+	thinkingInterval := 30 * time.Second
+	thinkingTicker := time.NewTicker(thinkingInterval)
+	defer thinkingTicker.Stop()
+
+	var resp *http.Response
+	waiting:
+	for {
+		select {
+		case result := <-resultCh:
+			resp, err = result.resp, result.err
+			break waiting
+		case <-thinkingTicker.C:
+			elapsed := time.Since(info.StartTime).Truncate(time.Second)
+			logger.LogInfo(c, fmt.Sprintf("[思考中] 等待上游响应 | model=%s | userId=%d | userEmail=%s | 耗时=%v | requestId=%s",
+				info.UpstreamModelName, info.UserId, info.UserEmail, elapsed, info.RequestId))
+		}
+	}
+
 	if err != nil {
 		logger.LogError(c, "do request failed: "+err.Error())
 		return nil, types.NewError(err, types.ErrorCodeDoRequestFailed, types.ErrOptionWithHideErrMsg("upstream error: do request failed"))
